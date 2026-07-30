@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WiFi 配置 - ESP32-S3-CAM</title>
+<style>
+  :root { --bg:#0b0f14; --fg:#e6edf3; --accent:#00ff88; --card:#141a22; --muted:#6b7580; --danger:#ff5d5d; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+         background:var(--bg); color:var(--fg); margin:0; padding:16px; max-width:640px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub{ color:var(--muted); font-size:12px; margin-bottom:14px; }
+  .card { background:var(--card); border:1px solid #223; border-radius:10px;
+    padding:14px; margin-bottom:12px; }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  input, select { width:100%; padding:8px 10px; background:#0b1017; border:1px solid #223;
+    color:var(--fg); border-radius:6px; font-size:14px; margin-bottom:10px; }
+  button, a.btn { display:inline-block; background:var(--accent); color:#000; border:0;
+    padding:9px 16px; border-radius:6px; font-size:14px; font-weight:600; cursor:pointer;
+    text-decoration:none; }
+  button.gray, a.gray { background:#2a3340; color:var(--fg); }
+  button.danger { background:var(--danger); color:#fff; }
+  .row { display:flex; gap:10px; align-items:center; }
+  #scanList { max-height:200px; overflow:auto; border:1px solid #223; border-radius:6px;
+    background:#0b1017; }
+  .ap { padding:8px 10px; border-bottom:1px solid #172029; cursor:pointer;
+    display:flex; justify-content:space-between; font-size:13px; }
+  .ap:hover{ background:#182029; }
+  .ap.selected { background:#1e3a2a; border-left:3px solid var(--accent); padding-left:7px; }
+  .rssi { color:var(--muted); font-family:monospace; }
+  #msg { min-height:20px; margin-top:8px; font-size:13px; }
+  .ok  { color:var(--accent); }
+  .err { color:var(--danger); }
+</style>
+</head>
+<body>
+  <h1>WiFi 配置</h1>
+  <div class="sub" id="statusLine">加载状态...</div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px;">
+      <b>附近 WiFi</b>
+      <button class="gray" onclick="scan()">刷新</button>
+    </div>
+    <div id="scanList"><div class="ap"><span>扫描中...</span></div></div>
+    <div class="sub" style="margin:6px 0 0;">点击列表项自动填入下方 SSID</div>
+  </div>
+
+  <div class="card">
+    <label>SSID</label>
+    <input id="ssid" placeholder="WiFi 名称" autocomplete="off">
+    <label>密码</label>
+    <input id="pass" type="password" placeholder="留空表示开放网络">
+    <div class="row">
+      <button onclick="save()">保存并重启</button>
+      <button class="danger" onclick="reset()">清除配置</button>
+      <a class="btn gray" href="/">返回视频</a>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+<script>
+const $=id=>document.getElementById(id);
+let apCache = [];
+let lastStatus = {};
+
+async function loadStatus(){
+  try{
+    const s = await (await fetch('/wifi/status')).json();
+    lastStatus = s;
+    let html = `模式 <b>${s.mode}</b>`;
+    if (s.sta_connected && s.sta_ip) {
+      html += ` &nbsp;|&nbsp; 已连接 <b>${s.saved_ssid}</b>`
+           +  ` &nbsp;|&nbsp; 视频地址: `
+           +  `<a href="http://${s.sta_ip}/" target="_blank">http://${s.sta_ip}/</a>`
+           +  ` 或 <a href="http://${s.hostname}.local/" target="_blank">http://${s.hostname}.local/</a>`;
+    } else if (s.saved_ssid) {
+      html += ` &nbsp;|&nbsp; 已保存 <b>${s.saved_ssid}</b>（未连接）`;
+    } else {
+      html += ` &nbsp;|&nbsp; 未配置 WiFi`;
+    }
+    $('statusLine').innerHTML = html;
+    if(s.saved_ssid) $('ssid').value = s.saved_ssid;
+  }catch(e){ $('statusLine').textContent='status: '+e; }
+}
+
+async function scan(){
+  $('scanList').innerHTML = '<div class="ap"><span>扫描中...</span></div>';
+  try{
+    const arr = await (await fetch('/wifi/scan')).json();
+    apCache = arr;
+    if(!arr.length){ $('scanList').innerHTML='<div class="ap"><span>无结果</span></div>'; return; }
+    arr.sort((a,b)=>b.rssi-a.rssi);
+    $('scanList').innerHTML = arr.map((a,i) => {
+      const ssid = a.ssid || '(hidden)';
+      const lock = a.auth===0 ? '🔓' : '🔒';
+      return `<div class="ap" data-idx="${i}" onclick="pick(${i})">
+                <span>${ssid} ${lock}</span>
+                <span class="rssi">${a.rssi} dBm</span>
+              </div>`;
+    }).join('');
+    // 若已保存 SSID 在扫描结果中，自动高亮
+    const savedSsid = $('ssid').value.trim();
+    if(savedSsid){
+      const hit = arr.findIndex(a => a.ssid === savedSsid);
+      if(hit >= 0) markSelected(hit);
+    }
+  }catch(e){ $('scanList').innerHTML='<div class="ap err">'+e+'</div>'; }
+}
+
+function markSelected(idx){
+  document.querySelectorAll('.ap').forEach(el=>el.classList.remove('selected'));
+  const el = document.querySelector(`.ap[data-idx="${idx}"]`);
+  if(el) el.classList.add('selected');
+}
+
+function pick(idx){
+  const a = apCache[idx];
+  if(!a) return;
+  $('ssid').value = a.ssid || '';
+  markSelected(idx);
+  const passEl = $('pass');
+  passEl.value = '';
+  if(a.auth === 0){
+    // 开放网络
+    passEl.placeholder = '开放网络，无需密码';
+    passEl.disabled = true;
+  } else {
+    passEl.placeholder = '请输入 WiFi 密码';
+    passEl.disabled = false;
+    passEl.focus();
+  }
+}
+
+async function save(){
+  const ssid = $('ssid').value.trim();
+  const pass = $('pass').value;
+  if(!ssid){ $('msg').innerHTML='<span class="err">请输入 SSID</span>'; return; }
+  $('msg').innerHTML='<span class="ok">保存中...</span>';
+  try{
+    const body = 'ssid=' + encodeURIComponent(ssid) + '&pass=' + encodeURIComponent(pass);
+    const r = await fetch('/wifi/save',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
+    const t = await r.text();
+    let data = null;
+    try { data = JSON.parse(t); } catch (_) {}
+    if (data && data.ok) {
+      showConnectHint(data.ssid || ssid, data.mac || '');
+    } else if (data && data.error) {
+      $('msg').innerHTML = '<span class="err">保存失败: '+data.error+'</span>';
+    } else {
+      $('msg').innerHTML = '<span class="ok">'+t+'</span>';
+    }
+  }catch(e){ $('msg').innerHTML = '<span class="err">'+e+'</span>'; }
+}
+
+/** 显示配网完成后的操作指引（替换整页内容） */
+function showConnectHint(ssid, mac){
+  const apSsid = 'ESP32-CAM-' + (mac ? mac.replace(/:/g,'').slice(-4).toUpperCase() : 'xxxx');
+  const host = lastStatus.hostname || ('esp32-cam-' + (mac||'').replace(/:/g,'').slice(-4).toLowerCase());
+  document.body.innerHTML = `
+    <div class="card" style="max-width:520px;margin:24px auto;">
+      <h1>配网已提交 ✓</h1>
+      <p class="ok">设备已保存 <b>${ssid}</b> 的凭据，将在 2 秒后自动重启并连接。</p>
+      <h3>接下来如何访问视频页面？</h3>
+      <ol style="line-height:1.8">
+        <li><b>推荐</b>：手机 WiFi 切换回 <b>${ssid}</b>，然后浏览器打开：
+          <br><a href="http://${host}.local/" style="font-size:1.1em;">http://${host}.local/</a>
+          <br>（大多数手机/电脑支持 mDNS，无需知道 IP）
+        </li>
+        <li>如上面链接打不开，用下面任一方式获取摄像头 IP：
+          <ul>
+            <li>登录路由器管理页面，DHCP 列表找 MAC = <code>${mac||'(未知)'}</code></li>
+            <li>手机 APP（如 <i>Fing</i>）扫描局域网找 ESP32</li>
+          </ul>
+          然后浏览器打开 <code>http://&lt;摄像头IP&gt;/</code>
+        </li>
+      </ol>
+      <div style="margin-top:14px;padding:10px;background:#332;border-left:3px solid #fa0;border-radius:4px;">
+        <b>连接失败？</b>密码错误或 5GHz 网络会导致连接失败。<br>
+        本设备的配网热点 <b>${apSsid}</b>（密码 <code>12345678</code>）<b>始终在线</b>，
+        可随时重新连接 <code>http://192.168.4.1/wifi</code> 重新配置。
+      </div>
+      <p style="text-align:center;margin-top:16px;color:#888;">
+        <span id="countdown">2</span> 秒后本页面连接可能中断，属正常现象。
+      </p>
+    </div>`;
+  let c = 2;
+  const t = setInterval(()=>{
+    c--;
+    const el = document.getElementById('countdown');
+    if(el) el.textContent = c;
+    if(c<=0) clearInterval(t);
+  }, 1000);
+}
+
+async function reset(){
+  if(!confirm('确定清除已保存的 WiFi 并重启到 AP 模式？')) return;
+  try{
+    await fetch('/wifi/reset',{method:'POST'});
+    $('msg').innerHTML='<span class="ok">已清除，设备重启中...</span>';
+  }catch(e){ $('msg').innerHTML='<span class="err">'+e+'</span>'; }
+}
+
+// 页面加载即自动扫描一次
+(async()=>{
+  await loadStatus();
+  scan();
+})();
+</script>
+</body>
+</html>

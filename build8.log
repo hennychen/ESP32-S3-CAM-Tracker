@@ -1,0 +1,28 @@
+﻿Processing esp32s3cam (platform: https://github.com/pioarduino/platform-espressif32/releases/download/55.03.311/platform-espressif32.zip; framework: espidf; board: esp32-s3-devkitc-1)
+--------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/esp32-s3-devkitc-1.html
+PLATFORM: Espressif 32 (55.3.311) > Espressif ESP32-S3-DevKitC-1-N8 (8 MB QD, No PSRAM)
+HARDWARE: ESP32S3 240MHz, 320KB RAM, 16MB Flash
+DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, esp-prog-2, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - contrib-piohome @ 3.4.4 
+ - framework-espidf @ 3.50505.0 (5.5.5) 
+ - tool-cmake @ 4.0.3 
+ - tool-esp-rom-elfs @ 2024.10.11 
+ - tool-esptoolpy @ 5.3.0 
+ - tool-ninja @ 1.13.1 
+ - tool-openocd-esp32 @ 2.1200.20260424 (12.0) 
+ - tool-scons @ 4.40801.0 (4.8.1) 
+ - tool-xtensa-esp-elf-gdb @ 17.1.0+20260402 
+ - toolchain-xtensa-esp-elf @ 14.2.0+20260121
+platformio.exe : Using Python 3.14.4 environment at: C:\Users\Administrator\.platformio\penv\.espidf-5.5.5
+At line:15 char:9143
++ ... .cache\uv"; & "C:\Users\Administrator\.platformio\penv\Scripts\platfo ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Using Python 3....v\.espidf-5.5.5:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Reading CMake configuration...
+Error: Couldn't find target config 
+========================= [FAILED] Took 195.69 seconds =========================

@@ -1,0 +1,29 @@
+# main/CMakeLists.txt
+idf_component_register(
+    SRCS
+        "main.c"
+        "app_camera.c"
+        "app_wifi.c"
+        "app_httpd.c"
+        "app_gimbal.c"
+        "app_face_detect.cpp"
+        "app_sdcard.c"
+    INCLUDE_DIRS
+        "."
+        "include"
+    EMBED_FILES
+        "web/index.html"
+        "web/wifi.html"
+    REQUIRES
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_http_server
+        nvs_flash
+        driver
+        lwip
+        esp32-camera
+        esp-dl
+        fatfs
+        sdmmc
+)

@@ -1,0 +1,73 @@
+﻿Processing esp32s3cam (platform: https://github.com/pioarduino/platform-espressif32/releases/download/55.03.311/platform-espressif32.zip; framework: espidf; board: esp32-s3-devkitc-1)
+--------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/esp32-s3-devkitc-1.html
+PLATFORM: Espressif 32 (55.3.311) > Espressif ESP32-S3-DevKitC-1-N8 (8 MB QD, No PSRAM)
+HARDWARE: ESP32S3 240MHz, 320KB RAM, 16MB Flash
+DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, esp-prog-2, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - contrib-piohome @ 3.4.4 
+ - framework-espidf @ 3.50505.0 (5.5.5) 
+ - tool-cmake @ 4.0.3 
+ - tool-esp-rom-elfs @ 2024.10.11 
+ - tool-esptoolpy @ 5.3.0 
+ - tool-ninja @ 1.13.1 
+ - tool-openocd-esp32 @ 2.1200.20260424 (12.0) 
+ - tool-scons @ 4.40801.0 (4.8.1) 
+ - tool-xtensa-esp-elf-gdb @ 17.1.0+20260402 
+ - toolchain-xtensa-esp-elf @ 14.2.0+20260121
+platformio.exe : Using Python 3.14.4 environment at: C:\Users\Administrator\.platformio\penv\.espidf-5.5.5
+At line:15 char:9143
++ ... .cache\uv"; & "C:\Users\Administrator\.platformio\penv\Scripts\platfo ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Using Python 3....v\.espidf-5.5.5:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Reading CMake configuration...
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 0 compatible libraries
+Scanning dependencies...
+No dependencies
+Building in release mode
+Compiling .pio\build\esp32s3cam\main\app_httpd.c.o
+Linking .pio\build\esp32s3cam\firmware.elf
+                            Memory Type Usage Summary                             
+┌─────────────────────┬──────────────┬──────────┬────────────────┬───────────────┐
+│ Memory Type/Section │ Used [bytes] │ Used [%] │ Remain [bytes] │ Total [bytes] │
+├─────────────────────┼──────────────┼──────────┼────────────────┼───────────────┤
+│ Flash Code          │      2243476 │          │                │               │
+│    .text            │      2243476 │          │                │               │
+│ Flash Data          │       372596 │          │                │               │
+│    .rodata          │       372340 │          │                │               │
+│    .appdesc         │          256 │          │                │               │
+│ DIRAM               │       142835 │    41.79 │         198925 │        341760 │
+│    .text            │        84599 │    24.75 │                │               │
+│    .data            │        31148 │     9.11 │                │               │
+│    .bss             │        27088 │     7.93 │                │               │
+│ IRAM                │        16384 │    100.0 │              0 │         16384 │
+│    .text            │        15356 │    93.73 │                │               │
+│    .vectors         │         1028 │     6.27 │                │               │
+└─────────────────────┴──────────────┴──────────┴────────────────┴───────────────┘
+Total image size: 2748203 bytes (.bin may be padded larger)
+Note: The reported total sizes may be smaller than those in the technical reference manual due to reserved memory and a
+pplication configuration. The total flash size available for the application is not included by default, as it cannot b
+e reliably determined due to the presence of other data like the bootloader, partition table, and application partition
+ size.
+Retrieving maximum program size .pio\build\esp32s3cam\firmware.elf
+Checking size .pio\build\esp32s3cam\firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [==        ]  17.8% (used 58236 bytes from 327680 bytes)
+Flash: [==        ]  16.4% (used 2747947 bytes from 16777216 bytes)
+Building .pio\build\esp32s3cam\firmware.bin
+esptool v5.3.0
+Creating ESP32-S3 image...
+Merged 2 ELF sections.
+Successfully created ESP32-S3 image.
+Creating binary "firmware.factory.bin" with:
+    Offset   | File
+ -  0x0      | bootloader.bin
+ -  0x8000   | partitions.bin
+ -  0x10000  | firmware.bin
+Successfully created combined binary image.
+======================== [SUCCESS] Took 355.59 seconds ========================

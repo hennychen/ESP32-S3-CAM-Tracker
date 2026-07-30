@@ -1,0 +1,11 @@
+# main/idf_component.yml
+# ESP-IDF 组件管理器依赖声明
+dependencies:
+  # 与 pioarduino platform（IDF 5.5.x）对齐
+  idf: ">=5.3"
+  espressif/esp32-camera: "^2.0.15"
+  # ESP-DL 3.0+（需要 IDF >=5.3），使用 img_t API
+  espressif/esp-dl: "^3.0.0"
+  espressif/human_face_detect: "^0.5.0"
+  # mDNS 服务，让用户可通过 esp32-cam.local 访问设备
+  espressif/mdns: "^1.8.0"

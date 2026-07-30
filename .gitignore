@@ -1,0 +1,24 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+.vscode/.browse.c_cpp.db*
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+
+# Build
+build/
+*.bin
+*.elf
+*.map
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 大文件资料（可选：忽略提交视频与 zip）
+淘宝客服提供的ESP32-S3-CAM开发板资料/视频教程/
+淘宝客服提供的ESP32-S3-CAM开发板资料/C/Libraries/*.zip
+淘宝客服提供的ESP32-S3-CAM开发板资料/C/Libraries/*.downloading

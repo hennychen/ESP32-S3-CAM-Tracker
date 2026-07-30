@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32-S3-CAM Face Tracker</title>
+<style>
+  :root { --bg:#0b0f14; --fg:#e6edf3; --accent:#00ff88; --card:#141a22; --muted:#6b7580; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+         background:var(--bg); color:var(--fg); margin:0; padding:16px; }
+  header { display:flex; justify-content:space-between; align-items:center;
+           margin-bottom:12px; gap:8px; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; }
+  a.btn, button { background:var(--card); color:var(--fg); border:1px solid #223;
+    padding:6px 12px; border-radius:6px; text-decoration:none; font-size:13px; cursor:pointer; }
+  a.btn:hover, button:hover { border-color:var(--accent); color:var(--accent); }
+  .wrap{ position:relative; display:inline-block; border:1px solid #333;
+    max-width:100%; background:#000; }
+  #v { display:block; width:100%; max-width:800px; height:auto; }
+  #box { position:absolute; border:2px solid var(--accent);
+    box-shadow:0 0 8px var(--accent); pointer-events:none; display:none; }
+  #info { margin-top:8px; font-family:monospace; color:var(--muted); font-size:13px; }
+  .stat { color:var(--accent); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>ESP32-S3-CAM  ·  OV5640  ·  Face Tracker</h1>
+    <div>
+      <a class="btn" href="/wifi">WiFi 配置</a>
+      <a class="btn" href="/capture" target="_blank">抓拍</a>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <img id="v" src="/stream" alt="video stream">
+    <div id="box"></div>
+  </div>
+  <div id="info">connecting stream ...</div>
+
+<script>
+const img=document.getElementById('v'),box=document.getElementById('box'),info=document.getElementById('info');
+async function poll(){
+  try{
+    const r=await fetch('/face',{cache:'no-store'}); const f=await r.json();
+    if(f.valid && f.iw>0){
+      const sx=img.clientWidth/f.iw, sy=img.clientHeight/f.ih;
+      box.style.display='block';
+      box.style.left =(f.x*sx)+'px'; box.style.top =(f.y*sy)+'px';
+      box.style.width=(f.w*sx)+'px'; box.style.height=(f.h*sy)+'px';
+      info.innerHTML=`<span class="stat">FACE</span>  #${f.frame}  (${f.x},${f.y})  ${f.w}x${f.h}  score=${f.score.toFixed(2)}`;
+    }else{
+      box.style.display='none';
+      info.innerHTML=`no face  #${f.frame||0}`;
+    }
+  }catch(e){ info.textContent='err: '+e; }
+  setTimeout(poll,150);
+}
+poll();
+</script>
+</body>
+</html>
