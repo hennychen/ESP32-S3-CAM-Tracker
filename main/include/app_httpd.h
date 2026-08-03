@@ -14,6 +14,12 @@ typedef struct {
     float    score;
     uint32_t frame_id;
     int      img_w, img_h;  // 该帧的图像尺寸
+    /* 5 点关键点（MNP 输出，原图绝对坐标）
+     * [0]左眼 [1]左嘴角 [2]鼻尖 [3]右眼 [4]右嘴角 */
+    int      kp[10];        // x0,y0,x1,y1,...,x4,y4
+    float    roll;          // 头部倾斜角（度，正值=右倾）
+    float    vert_ratio;    // 眼-鼻 / 眼-嘴 垂直比例（正常~0.5，低头时下降）
+    bool     drowsy;        // 粗略疲劳标志（低头/歪头）
 } face_result_t;
 
 /** 启动 HTTP MJPEG 服务器：

@@ -20,8 +20,28 @@
   #v { display:block; width:100%; max-width:800px; height:auto; }
   #box { position:absolute; border:2px solid var(--accent);
     box-shadow:0 0 8px var(--accent); pointer-events:none; display:none; }
+  /* 状态徽章 —— 始终可见，让用户一眼看到检测状态 */
+  #badge { position:absolute; top:8px; left:8px;
+    padding:4px 12px; border-radius:4px; font-size:13px; font-weight:bold;
+    font-family:monospace; letter-spacing:0.5px; pointer-events:none;
+    transition:background 0.2s, color 0.2s; }
+  .badge-found   { background:var(--accent); color:#000; }
+  .badge-search  { background:#333; color:#aaa; }
+  .badge-error   { background:#c0392b; color:#fff; }
   #info { margin-top:8px; font-family:monospace; color:var(--muted); font-size:13px; }
   .stat { color:var(--accent); }
+  /* 关键点圆点 */
+  .kp-dot { position:absolute; width:8px; height:8px; border-radius:50%;
+    pointer-events:none; display:none; transform:translate(-50%,-50%);
+    box-shadow:0 0 4px currentColor; z-index:3; }
+  .kp-eye  { background:#00ffff; color:#00ffff; }
+  .kp-nose { background:#ffff00; color:#ffff00; }
+  .kp-mouth{ background:#ff8800; color:#ff8800; }
+  /* 疲劳预警 */
+  #drowsy-alert { margin-top:8px; padding:8px 16px; background:#c0392b;
+    color:#fff; font-weight:bold; border-radius:6px; font-size:14px;
+    display:none; animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:0.6; } }
 </style>
 </head>
 <body>
@@ -34,30 +54,174 @@
   </header>
 
   <div class="wrap">
-    <img id="v" src="/stream" alt="video stream">
+    <img id="v" alt="video stream">
+    <div id="badge" class="badge-search">搜索中…</div>
     <div id="box"></div>
+    <div id="kp0" class="kp-dot kp-eye"></div>
+    <div id="kp1" class="kp-dot kp-mouth"></div>
+    <div id="kp2" class="kp-dot kp-nose"></div>
+    <div id="kp3" class="kp-dot kp-eye"></div>
+    <div id="kp4" class="kp-dot kp-mouth"></div>
   </div>
-  <div id="info">connecting stream ...</div>
+  <div id="info">connecting ...</div>
+  <div id="drowsy-alert">疲劳警告：检测到低头/歪头</div>
+  <div style="margin-top:8px;">
+    <button id="ear-btn">启用精确闭眼检测 (MediaPipe)</button>
+    <span id="ear-display" style="display:none; margin-left:12px; font-family:monospace; font-size:13px;">
+      EAR: <b id="ear-val">--</b>  <span id="eye-status">--</span>
+      <span style="color:var(--muted); margin-left:8px;">(闭眼阈值 &lt; 0.20)</span>
+    </span>
+  </div>
 
 <script>
-const img=document.getElementById('v'),box=document.getElementById('box'),info=document.getElementById('info');
-async function poll(){
+const img=document.getElementById('v'),
+      box=document.getElementById('box'),
+      badge=document.getElementById('badge'),
+      info=document.getElementById('info');
+
+// 视频帧：用 img.src 直接刷新（浏览器原生加载，最可靠）
+// onload 触发下一帧请求，形成自驱动的帧循环
+let frameSeq=0;
+img.onload=function(){
+  frameSeq++;
+  window.dispatchEvent(new Event('frameReady'));
+  img.src='/capture?t='+Date.now();
+};
+img.onerror=function(){
+  setTimeout(function(){ img.src='/capture?t='+Date.now(); }, 500);
+};
+img.src='/capture?t='+Date.now();
+
+// 人脸检测：独立轮询 /face API
+// /capture 和 /face 都是短请求（发完即返回），不会互相阻塞
+let errCount=0;
+async function pollFace(){
   try{
-    const r=await fetch('/face',{cache:'no-store'}); const f=await r.json();
+    const r=await fetch('/face',{cache:'no-store'});
+    const f=await r.json();
+    errCount=0;
+
     if(f.valid && f.iw>0){
-      const sx=img.clientWidth/f.iw, sy=img.clientHeight/f.ih;
-      box.style.display='block';
-      box.style.left =(f.x*sx)+'px'; box.style.top =(f.y*sy)+'px';
-      box.style.width=(f.w*sx)+'px'; box.style.height=(f.h*sy)+'px';
-      info.innerHTML=`<span class="stat">FACE</span>  #${f.frame}  (${f.x},${f.y})  ${f.w}x${f.h}  score=${f.score.toFixed(2)}`;
+      const cw=img.clientWidth||f.iw, ch=img.clientHeight||f.ih;
+      if(cw>0 && ch>0){
+        const sx=cw/f.iw, sy=ch/f.ih;
+        box.style.display='block';
+        box.style.left=(f.x*sx)+'px'; box.style.top=(f.y*sy)+'px';
+        box.style.width=(f.w*sx)+'px'; box.style.height=(f.h*sy)+'px';
+
+        // 定位 5 个关键点
+        if(f.kp && f.kp.length>=10){
+          for(let i=0;i<5;i++){
+            const dot=document.getElementById('kp'+i);
+            dot.style.display='block';
+            dot.style.left=(f.kp[i*2]*sx)+'px';
+            dot.style.top=(f.kp[i*2+1]*sy)+'px';
+          }
+        }
+      }
+      badge.textContent='FACE  '+(f.score*100).toFixed(0)+'%';
+      badge.className='badge-found';
+
+      // 疲劳预警
+      document.getElementById('drowsy-alert').style.display=f.drowsy?'block':'none';
+
+      info.innerHTML='<span class="stat">FACE</span>  #'+f.frame+
+        '  score='+f.score.toFixed(2)+
+        '  roll='+(f.roll||0).toFixed(0)+'&#176;'+
+        '  vr='+(f.vr||0).toFixed(2)+
+        (f.drowsy?'  <span style="color:#e74c3c">DROWSY</span>':'');
     }else{
       box.style.display='none';
-      info.innerHTML=`no face  #${f.frame||0}`;
+      for(let i=0;i<5;i++) document.getElementById('kp'+i).style.display='none';
+      document.getElementById('drowsy-alert').style.display='none';
+      badge.textContent='搜索中…';
+      badge.className='badge-search';
+      info.textContent='no face  #'+(f.frame||0);
     }
-  }catch(e){ info.textContent='err: '+e; }
-  setTimeout(poll,150);
+  }catch(e){
+    errCount++;
+    box.style.display='none';
+    if(errCount>5){ badge.textContent='检测服务异常'; badge.className='badge-error'; }
+    info.textContent='poll err: '+e.message;
+  }
+  setTimeout(pollFace,300);
 }
-poll();
+pollFace();
+</script>
+
+<script type="module">
+// === 路线C: MediaPipe 468 点精确闭眼检测 ===
+// 按需加载：用户点击按钮后从 CDN 加载模型
+// 需要客户端有互联网连接（如 STA 模式连接路由器）
+
+let faceLandmarker = null;
+let earEnabled = false;
+const earBtn = document.getElementById('ear-btn');
+const earDisplay = document.getElementById('ear-display');
+const earVal = document.getElementById('ear-val');
+const eyeStatus = document.getElementById('eye-status');
+const imgEl = document.getElementById('v');
+
+const offCanvas = document.createElement('canvas');
+const offCtx = offCanvas.getContext('2d');
+
+// MediaPipe 468 点 EAR 计算
+// 左眼: 33(外角) 160(上1) 158(上2) 133(内角) 153(下1) 144(下2)
+// 右眼: 362(内角) 385(上1) 387(上2) 263(外角) 373(下1) 380(下2)
+function calcEAR(lm) {
+  const d = (a, b) => Math.hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y);
+  const left = (d(160, 144) + d(158, 153)) / (2 * d(33, 133));
+  const right = (d(385, 380) + d(387, 373)) / (2 * d(362, 263));
+  return (left + right) / 2;
+}
+
+earBtn.onclick = async function() {
+  if (!faceLandmarker) {
+    earBtn.textContent = '加载模型中...';
+    try {
+      const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs');
+      const fs = await vision.FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm'
+      );
+      faceLandmarker = await vision.FaceLandmarker.createFromOptions(fs, {
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+          delegate: 'GPU'
+        },
+        runningMode: 'IMAGE',
+        numFaces: 1
+      });
+    } catch(e) {
+      earBtn.textContent = '加载失败（需互联网）';
+      console.error('MediaPipe error:', e);
+      return;
+    }
+  }
+  earEnabled = !earEnabled;
+  earBtn.textContent = earEnabled ? '关闭精确检测' : '启用精确闭眼检测 (MediaPipe)';
+  earDisplay.style.display = earEnabled ? 'inline' : 'none';
+};
+
+// 每帧触发 EAR 检测
+window.addEventListener('frameReady', function() {
+  if (!earEnabled || !faceLandmarker) return;
+  try {
+    offCanvas.width = imgEl.naturalWidth || 320;
+    offCanvas.height = imgEl.naturalHeight || 240;
+    offCtx.drawImage(imgEl, 0, 0);
+    const res = faceLandmarker.detect(offCanvas);
+    if (res.faceLandmarks && res.faceLandmarks.length > 0) {
+      const ear = calcEAR(res.faceLandmarks[0]);
+      earVal.textContent = ear.toFixed(3);
+      const closed = ear < 0.20;
+      eyeStatus.textContent = closed ? 'CLOSED' : 'OPEN';
+      eyeStatus.style.color = closed ? '#e74c3c' : '#00ff88';
+    } else {
+      earVal.textContent = '--';
+      eyeStatus.textContent = 'no face';
+    }
+  } catch(e) {}
+});
 </script>
 </body>
 </html>

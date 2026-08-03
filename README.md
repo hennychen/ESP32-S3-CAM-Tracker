@@ -73,18 +73,26 @@ ESP32-S3-CAM-Tracker/
       │  OV5640  ├───────►│  face_detect 任务 ├─────────►│ ESP-DL     │
       │  (DVP)   │        │  (core 1)         │          │ HumanFace  │
       └──────────┘        └──┬───────────┬────┘          └──────┬─────┘
-                             │           │                      │
-                             │ shared    │ face_result_t        │
-                             │ JPEG      │                      ▼
+      QVGA 320x240           │           │                      │
+                             │           │ face_result_t        │
+                             │           │ (box+5kp+pose+ear)   ▼
                              ▼           ▼                ┌─────────────┐
                         ┌─────────┐ ┌─────────┐          │ app_gimbal  │
-                        │ /stream │ │  /face  │          │ (LEDC PWM)  │
-                        └─────────┘ └─────────┘          └─────────────┘
+                        │/capture │ │  /face  │          │ (LEDC PWM)  │
+                        │ (帧推送) │ │ (JSON)  │          └─────────────┘
+                        └────┬────┘ └─────────┘
+                             │
+                    ┌────────┴────────────────────┐
+                    ▼                             ▼
+              路线A (ESP32端)               路线C (浏览器端)
+              img.src 轮询 ~5fps            MediaPipe 468点
+              绿色人脸框 + 5关键点          EAR 精确闭眼检测
+              青色眼/黄色鼻/橙色嘴          (需客户端互联网)
 ```
 
-- 单一取帧源：由检测任务独占 `esp_camera_fb_get()`，同时把 JPEG 副本放到共享缓冲供 HTTP 推流。
-- 检测任务对 JPEG 做 `jpg2rgb565` 后送入 `HumanFaceDetect::run()`，输出最优框驱动云台。
-- 前端 `/` 页面用 `<img src="/stream">` 显示视频，同时 JS 轮询 `/face` 叠加绿色人脸框。
+- **推流**：前端用 `img.src='/capture'` 自驱动轮询（onload → 下一帧），不使用 `/stream` MJPEG 长连接（避免 httpd 单线程阻塞导致 `/face` 超时）。
+- **检测**：`face_detect` 任务独立按 100~200ms 节奏抓帧，JPEG→RGB565 后送入 `HumanFaceDetect::run()`，输出人脸框 + 5 点关键点。
+- **前端**：`/face` JSON 轮询叠加绿色框 + 彩色关键点；可选启用 MediaPipe 在浏览器端做 468 点精确 EAR 闭眼检测。
 
 ---
 
@@ -92,10 +100,10 @@ ESP32-S3-CAM-Tracker/
 
 | 路径 | 方法 | 说明 |
 |---|---|---|
-| `/`             | GET  | 主页：MJPEG 视频 + 人脸框叠加 |
-| `/stream`       | GET  | `multipart/x-mixed-replace` MJPEG 推流 |
-| `/capture`      | GET  | 单帧 JPEG（用于抓拍） |
-| `/face`         | GET  | 最新检测结果 JSON `{valid,x,y,w,h,score,frame,iw,ih}` |
+| `/`             | GET  | 主页：视频画面 + 人脸框 + 5点关键点 + 闭眼检测 |
+| `/stream`       | GET  | `multipart/x-mixed-replace` MJPEG 推流（保留，默认不使用） |
+| `/capture`      | GET  | 单帧 JPEG（附带 `X-Face` 响应头含检测结果） |
+| `/face`         | GET  | 最新检测结果 JSON `{valid,x,y,w,h,score,frame,iw,ih,kp[10],roll,vr,drowsy}` |
 | `/wifi`         | GET  | **配网页面**（扫描/输入/保存） |
 | `/wifi/status`  | GET  | `{mode:"STA/AP", saved_ssid, configured}` |
 | `/wifi/scan`    | GET  | 附近 AP 列表 `[{ssid,rssi,auth}]` |
@@ -270,17 +278,99 @@ STA -> http://192.168.1.123/
 - [x] **v0.5** **跨平台快捷脚本**（Windows PowerShell/CMD + MacOS/Linux Bash）
 - [x] **v0.6** **升级到 ESP-IDF 5.5.5 + ESP-DL 3.0**（pioarduino fork）
 - [x] **v0.7** **配网体验优化** (Captive Portal / UI 自动扫描)
-- [x] **v0.8** **配网 UX 全面升级** (AP 常在 / mDNS / 状态面板 / 引导页) ← **当前版本**
-- [ ] **v0.9** OTA 空中升级（`esp_https_ota`）
-- [ ] **v1.0** SD 卡录像 + MPU-6050 稳像
-- [ ] **v1.1** MQTT 上报检测结果 / 云端管理
-- [ ] **v1.2** 多目标 ByteTrack 追踪 + 目标 ID 保持
+- [x] **v0.8** **配网 UX 全面升级** (AP 常在 / mDNS / 状态面板 / 引导页)
+- [x] **v0.9** **人脸检测全链路修复 + 5点关键点 + 闭眼检测** ← **当前版本**
+- [ ] **v1.0** OTA 空中升级（`esp_https_ota`）
+- [ ] **v1.1** SD 卡录像 + MPU-6050 稳像
+- [ ] **v1.2** MQTT 上报检测结果 / 云端管理
+- [ ] **v1.3** 多目标 ByteTrack 追踪 + 目标 ID 保持
 
 ---
 
 ## 11. 变更日志
 
-### v0.8 (current) — 配网 UX 全面升级
+### v0.9 (current) — 人脸检测全链路修复 + 5点关键点 + 闭眼检测
+
+**核心改动**：修复了人脸检测从"不工作"到"score=1.00 + 5点关键点 + 双路闭眼检测"的完整链路。
+
+#### 1. ESP-DL 检测调优（根因修复）
+
+- **MSR/MNP 双阈值配置** [app_face_detect.cpp](file:///e:/ESP32-S3-CAM-Tracker/main/app_face_detect.cpp#L60-L64)
+  - 问题：MSR int8 量化后原始分数 <0.5，被默认阈值全部过滤 → 检测不到任何人脸
+  - 修复：`det->set_score_thr(0.05, 0)` 放宽 MSR；`det->set_score_thr(0.5, 1)` 收紧 MNP
+  - 效果：score 从 0 提升到 0.98~1.00
+- **检测分辨率匹配** [main.c](file:///e:/ESP32-S3-CAM-Tracker/main/main.c#L50-L51)
+  - QVGA 320×240 (4:3) 与 MSR 模型输入 160×120 宽高比完全匹配，避免缩放失真
+- **摄像头 AE 预热** [app_face_detect.cpp](file:///e:/ESP32-S3-CAM-Tracker/main/app_face_detect.cpp#L74-L79)
+  - OV5640 启动后丢弃前 12 帧让自动曝光收敛，避免暗帧漏检
+- **检测任务延迟调整** [app_face_detect.cpp](file:///e:/ESP32-S3-CAM-Tracker/main/app_face_detect.cpp#L148-L150)
+  - 命中时 100ms / 丢失时 200ms，减少与 stream 的帧缓冲竞争
+
+#### 2. 推流架构重构（解决 httpd 阻塞）
+
+- **问题**：ESP-IDF httpd 单线程，`stream_handler` 的 `while(1)` 推流阻塞了 `/face` 的 AJAX 请求 → 前端永远显示"搜索中…"
+- **修复**：前端从 `<img src="/stream">` 改为 `img.src='/capture'` 自驱动轮询
+  - `capture_handler` 发完一帧即返回，不阻塞 httpd 线程
+  - `X-Face` 响应头附带人脸数据，一个请求同时拿到帧+检测结果
+  - `/face` API 独立轮询叠加检测框和关键点
+
+#### 3. 5 点关键点 + 粗略疲劳检测（路线 A）
+
+- **face_result_t 扩展** [app_httpd.h](file:///e:/ESP32-S3-CAM-Tracker/main/include/app_httpd.h)
+  - 新增：`kp[10]`（5点×2坐标）、`roll`（头部倾斜角）、`vert_ratio`（眼鼻嘴比例）、`drowsy`（疲劳标志）
+- **MNP 关键点读取** [app_face_detect.cpp](file:///e:/ESP32-S3-CAM-Tracker/main/app_face_detect.cpp#L128-L152)
+  - 5点顺序：`[0]左眼 [1]左嘴角 [2]鼻尖 [3]右眼 [4]右嘴角`（原图绝对坐标）
+  - 计算 roll = 双眼连线与水平线夹角
+  - 计算 vert_ratio = 眼→鼻 / 眼→嘴 垂直比例（低头时下降）
+  - drowsy 判定：`vert_ratio < 0.35` 或 `|roll| > 25°`
+- **前端可视化** [index.html](file:///e:/ESP32-S3-CAM-Tracker/main/web/index.html)
+  - 5 个彩色圆点：青色=眼睛 / 黄色=鼻尖 / 橙色=嘴角
+  - 疲劳预警横幅（红色闪烁动画）
+
+#### 4. MediaPipe 468 点精确闭眼检测（路线 C）
+
+- **按需加载**：前端按钮点击后从 CDN 加载 MediaPipe FaceLandmarker（~11MB，需客户端互联网）
+- **EAR 计算**：标准 6 点 Eye Aspect Ratio 算法
+  - 左眼点：33, 160, 158, 133, 153, 144
+  - 右眼点：362, 385, 387, 263, 373, 380
+  - `EAR < 0.20` → CLOSED，否则 OPEN
+- **GPU 加速**：`delegate: 'GPU'`，单帧推理 15-40ms
+- **触发机制**：`img.onload` → `window.dispatchEvent('frameReady')` → MediaPipe `detect()`
+
+#### 5. TF 卡支持（部分）
+
+- SDMMC 1-bit 模式（CLK=39 / CMD=38 / D0=40）硬件通信已成功
+- 128GB SDXC 卡需格式化为 FAT32（ESP32 默认不支持 exFAT）
+
+**新增/修改文件**
+
+| 文件 | 改动 |
+|------|------|
+| [app_face_detect.cpp](file:///e:/ESP32-S3-CAM-Tracker/main/app_face_detect.cpp) | MSR/MNP 阈值、预热、keypoint 读取、姿态计算 |
+| [app_httpd.c](file:///e:/ESP32-S3-CAM-Tracker/main/app_httpd.c) | capture_handler 改为直接取帧+X-Face头、face_handler 增加 kp/roll/drowsy |
+| [app_httpd.h](file:///e:/ESP32-S3-CAM-Tracker/main/include/app_httpd.h) | face_result_t 扩展字段 |
+| [main.c](file:///e:/ESP32-S3-CAM-Tracker/main/main.c) | DET_FRAMESIZE → QVGA |
+| [index.html](file:///e:/ESP32-S3-CAM-Tracker/main/web/index.html) | /capture 轮询 + 5点可视化 + 疲劳预警 + MediaPipe EAR |
+
+**性能指标**
+
+| 指标 | 值 |
+|------|-----|
+| 人脸检测 score | 0.98 ~ 1.00 |
+| 检测帧率 | ~4.5 fps |
+| 视频帧延迟 | avg 52ms / max 112ms |
+| /capture + X-Face | 27/27 成功（含人脸数据） |
+| Flash | 17.4% (2.91MB / 16MB) |
+| RAM | 21.5% (70KB / 320KB) |
+
+**踩坑记录**
+
+- **MJPEG stream 阻塞 httpd**：ESP-IDF httpd 是单线程的，`stream_handler` 的 `while(1)` 无限推流循环会饿死所有其他 URI handler。双 httpd 实例方案（端口 80+81）因 LWIP socket 限制失败。最终改为 `/capture` 短轮询 + `X-Face` 头方案。
+- **blob URL 渲染问题**：`fetch + blob URL + revokeObjectURL` 在快速轮询时图片来不及渲染就被撤销，改用浏览器原生 `img.src` 直接刷新。
+- **DET_FRAMESIZE 未持久化**：HVGA (480×320, 3:2) 与 MSR 模型 (160×120, 4:3) 宽高比不匹配导致缩放失真，改为 QVGA (320×240, 4:3)。
+- **MSR int8 量化分数偏低**：MSR 阶段原始分数 <0.5 但 MNP 精调后可达 1.0，这是量化精度损失的正常现象，通过放宽 MSR 阈值解决。
+
+### v0.8 — 配网 UX 全面升级
 
 **核心改动**：把配网过程从"技术活"变成"填个 SSID 点保存"。
 

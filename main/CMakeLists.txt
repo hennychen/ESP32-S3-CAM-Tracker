@@ -8,6 +8,7 @@ idf_component_register(
         "app_gimbal.c"
         "app_face_detect.cpp"
         "app_sdcard.c"
+        "app_record.c"
     INCLUDE_DIRS
         "."
         "include"

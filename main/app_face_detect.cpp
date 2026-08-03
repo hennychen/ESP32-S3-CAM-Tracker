@@ -19,6 +19,7 @@ extern "C" {
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <string.h>
+#include <math.h>
 }
 
 #include <list>
@@ -59,6 +60,9 @@ static void face_task(void *arg)
 {
     ESP_LOGI(TAG, "face detect task start (decoupled from stream)");
     HumanFaceDetect *det = new HumanFaceDetect();
+    // MSR 原始分数偏低但 MNP 精调后可达 1.0，故 MSR 放宽、MNP 收紧
+    det->set_score_thr(0.05, 0);   // MSR 阶段：放宽门槛让候选进入 MNP
+    det->set_score_thr(0.5,  1);   // MNP 阶段：最终筛选，score>0.5 才算有效人脸
 
     // C: 预分配 RGB 缓冲（按 HVGA 480x320 上限，兼容更大分辨率时可下调）
     const size_t rgb_cap = 640 * 480 * 2;
@@ -67,6 +71,14 @@ static void face_task(void *arg)
         ESP_LOGE(TAG, "no PSRAM for RGB buffer");
         vTaskDelete(NULL); return;
     }
+
+    // 摄像头预热：丢弃前 12 帧让 OV5640 AE/AWB 收敛，避免初期暗帧导致漏检
+    for (int i = 0; i < 12; i++) {
+        camera_fb_t *wb = app_camera_get();
+        if (wb) app_camera_return(wb);
+        vTaskDelay(pdMS_TO_TICKS(40));
+    }
+    ESP_LOGI(TAG, "camera warmup done");
 
     uint32_t frame_id = 0;
     uint32_t miss_streak = 0;   // 连续未检出人脸的帧数
@@ -115,6 +127,33 @@ static void face_task(void *arg)
                 int cy = y0 + r.h / 2;
                 app_gimbal_track(cx, cy, false);
                 miss_streak = 0;
+
+                // 读取 5 点关键点（MNP 输出）并计算粗略姿态指标
+                // 点序：[0]左眼 [1]左嘴角 [2]鼻尖 [3]右眼 [4]右嘴角
+                if (best->keypoint.size() >= 10) {
+                    for (int i = 0; i < 10; i++) r.kp[i] = best->keypoint[i];
+
+                    float ley = r.kp[1], rey = r.kp[7];   // 左/右眼 y
+                    float lmy = r.kp[3], rmy = r.kp[9];   // 左/右嘴角 y
+                    float ney = r.kp[5];                   // 鼻尖 y
+                    float lex = r.kp[0], rex = r.kp[6];   // 左/右眼 x
+
+                    // 头部倾斜角（roll）：双眼连线与水平线夹角
+                    r.roll = atan2f(rey - ley, rex - lex) * 180.0f / M_PI;
+
+                    // 眼→鼻 / 眼→嘴 垂直比例（正常约 0.5，低头时下降）
+                    float emy = (ley + rey) * 0.5f;
+                    float mmy = (lmy + rmy) * 0.5f;
+                    float eye_mouth = mmy - emy;
+                    r.vert_ratio = (eye_mouth > 1.0f) ? (ney - emy) / eye_mouth : 0.5f;
+
+                    // 粗略疲劳判断：低头或歪头
+                    r.drowsy = (r.vert_ratio < 0.35f) || (fabsf(r.roll) > 25.0f);
+                }
+
+                ESP_LOGI(TAG, "face: score=%.2f box=[%d,%d,%d,%d] roll=%.0f vr=%.2f drowsy=%d #%u",
+                         best->score, x0, y0, x1, y1,
+                         r.roll, r.vert_ratio, r.drowsy ? 1 : 0, (unsigned)frame_id);
             } else {
                 app_gimbal_track(0, 0, true);
                 if (miss_streak < 1000) miss_streak++;
@@ -132,9 +171,9 @@ static void face_task(void *arg)
             det_t0 = now;
         }
 
-        // G: 自适应间隔——连续无脸时降低检测频率，把 CPU 让给推流
-        uint32_t delay_ms = (miss_streak > 30) ? 200 :
-                            (miss_streak > 10) ? 60  : 5;
+        // 降低检测频率，减少与 stream 的摄像头竞争
+        // stream 需要流畅推送，face_task 每 100-200ms 获取一次帧即可
+        uint32_t delay_ms = (miss_streak > 10) ? 200 : 100;
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
     heap_caps_free(rgb);

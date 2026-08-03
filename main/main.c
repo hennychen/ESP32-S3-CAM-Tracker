@@ -24,6 +24,7 @@
 #include "app_gimbal.h"
 #include "app_face_detect.h"
 #include "app_sdcard.h"
+#include "app_record.h"
 
 static const char *TAG = "main";
 
@@ -47,9 +48,8 @@ static void start_mdns(void)
     ESP_LOGI(TAG, "mDNS started: http://%s.local  and  http://esp32-cam.local", host);
 }
 
-// 检测输入分辨率：ESP-DL human_face_detect 通常 240x240 / 320x240 效率最佳
-#define DET_FRAMESIZE   FRAMESIZE_HVGA        // 480x320
-// 若模型较大导致内存吃紧，可改用 FRAMESIZE_QVGA(320x240) 或 FRAMESIZE_240X240
+// 检测输入分辨率：QVGA 320x240 与 ESP-DL MSR 模型输入 160x120 宽高比完全匹配(4:3)，避免缩放失真
+#define DET_FRAMESIZE   FRAMESIZE_QVGA        // 320x240
 
 void app_main(void)
 {
@@ -57,12 +57,8 @@ void app_main(void)
     ESP_LOGI(TAG, "internal heap : %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     ESP_LOGI(TAG, "psram    heap : %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-    // 0) TF 卡挂载（暂时禁用：GPIO 38/39/40 与 Octal PSRAM 内部信号有潜在冲突，
-    //    v0.10 排查 SD 引脚后再开启）
-    // esp_err_t sd_err = app_sdcard_mount();
-    // if (sd_err != ESP_OK) {
-    //     ESP_LOGW(TAG, "TF card not available: %s", esp_err_to_name(sd_err));
-    // }
+    // 0) TF 卡挂载（GPIO 38/39/40 不与 Octal PSRAM 冲突，可直接使用）
+    //    由 app_record_start 内部调用 app_sdcard_mount()
 
     // 1) WiFi 先启动（STA 优先，失败降级 AP 配网）
     //    这样即便摄像头/云台初始化失败，也能通过 AP 观察和排障
@@ -82,7 +78,7 @@ void app_main(void)
     }
 
     // 3) 云台
-    app_gimbal_init(480, 320);
+    app_gimbal_init(320, 240);
 
     // 4) HTTP MJPEG + JSON + 配网 API
     app_httpd_start();
@@ -99,6 +95,11 @@ void app_main(void)
     // 5) 人脸检测任务（仅当摄像头正常）
     if (cam_err == ESP_OK) {
         app_face_detect_start();
+    }
+
+    // 6) 自动抓拍 & 录像（仅当摄像头正常，内部自动挂载 TF 卡 + SNTP）
+    if (cam_err == ESP_OK) {
+        app_record_start();
     }
 
     ESP_LOGI(TAG, "boot done. open browser -> http://<ip>/");

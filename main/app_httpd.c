@@ -9,6 +9,7 @@
 #include "esp_netif.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include <string.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -55,16 +56,21 @@ static esp_err_t wifi_page_handler(httpd_req_t *req)
 /* ============ 视频 & 检测 ============ */
 static esp_err_t face_handler(httpd_req_t *req)
 {
-    char buf[192];
+    char buf[384];
     xSemaphoreTake(s_face_lock, portMAX_DELAY);
     face_result_t f = s_face;
     xSemaphoreGive(s_face_lock);
 
     int n = snprintf(buf, sizeof(buf),
         "{\"valid\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
-        "\"score\":%.2f,\"frame\":%lu,\"iw\":%d,\"ih\":%d}",
+        "\"score\":%.2f,\"frame\":%lu,\"iw\":%d,\"ih\":%d,"
+        "\"kp\":[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d],"
+        "\"roll\":%.1f,\"vr\":%.2f,\"drowsy\":%s}",
         f.valid ? "true" : "false", f.x, f.y, f.w, f.h,
-        f.score, (unsigned long)f.frame_id, f.img_w, f.img_h);
+        f.score, (unsigned long)f.frame_id, f.img_w, f.img_h,
+        f.kp[0], f.kp[1], f.kp[2], f.kp[3], f.kp[4],
+        f.kp[5], f.kp[6], f.kp[7], f.kp[8], f.kp[9],
+        f.roll, f.vert_ratio, f.drowsy ? "true" : "false");
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -73,14 +79,28 @@ static esp_err_t face_handler(httpd_req_t *req)
 
 static esp_err_t capture_handler(httpd_req_t *req)
 {
-    const uint8_t *buf = NULL; size_t len = 0;
-    if (!app_face_detect_frame_lock(&buf, &len)) {
-        httpd_resp_send_500(req); return ESP_FAIL;
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
     }
+
+    // 把最新人脸结果附加到 HTTP 头，前端一次请求即可拿到帧+人脸
+    face_result_t f;
+    xSemaphoreTake(s_face_lock, portMAX_DELAY);
+    f = s_face;
+    xSemaphoreGive(s_face_lock);
+
+    char face_hdr[128];
+    snprintf(face_hdr, sizeof(face_hdr), "%d,%d,%d,%d,%d,%.2f,%lu,%d,%d",
+             f.valid ? 1 : 0, f.x, f.y, f.w, f.h, f.score,
+             (unsigned long)f.frame_id, f.img_w, f.img_h);
+    httpd_resp_set_hdr(req, "X-Face", face_hdr);
+
     httpd_resp_set_type(req, "image/jpeg");
     httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=cap.jpg");
-    esp_err_t r = httpd_resp_send(req, (const char*)buf, len);
-    app_face_detect_frame_unlock();
+    esp_err_t r = httpd_resp_send(req, (const char*)fb->buf, fb->len);
+    esp_camera_fb_return(fb);
     return r;
 }
 
@@ -94,12 +114,18 @@ static esp_err_t stream_handler(httpd_req_t *req)
     int64_t last = 0;
     uint32_t frames = 0;
     while (1) {
-        // A: 推流直连 sensor，与检测任务解耦；grab_mode=LATEST 保证拿到最新帧
+        // 直接推送原始 JPEG，人脸框由前端叠加显示（避免解码+重编码导致流卡顿）
         camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
 
+        face_result_t f;
+        xSemaphoreTake(s_face_lock, portMAX_DELAY);
+        f = s_face;
+        xSemaphoreGive(s_face_lock);
+
         int64_t ts = esp_timer_get_time();
-        size_t hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, (unsigned)fb->len, ts);
+        size_t hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART,
+                               (unsigned)fb->len, ts);
 
         if ((res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY))) != ESP_OK ||
             (res = httpd_resp_send_chunk(req, part_buf, hlen)) != ESP_OK ||
@@ -107,18 +133,20 @@ static esp_err_t stream_handler(httpd_req_t *req)
             esp_camera_fb_return(fb);
             break;
         }
+
         esp_camera_fb_return(fb);
 
-        // 每 30 帧打印一次实际 FPS，便于评估优化效果
+        // 每 30 帧打印一次实际 FPS
         frames++;
         if (frames % 30 == 0) {
             if (last) {
                 float fps = 30.0f * 1000000.0f / (float)(ts - last);
-                ESP_LOGI(TAG, "stream fps=%.1f", fps);
+                ESP_LOGI(TAG, "stream fps=%.1f face=%s", fps, f.valid ? "Y" : "N");
             }
             last = ts;
         }
     }
+
     ESP_LOGI(TAG, "stream ended");
     return res;
 }
