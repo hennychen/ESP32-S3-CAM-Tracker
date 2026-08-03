@@ -329,6 +329,8 @@ STA -> http://192.168.1.123/
 
 #### 4. MediaPipe 468 点精确闭眼检测（路线 C）
 
+![MediaPipe 闭眼检测](docs/images/mediapipe-ear-detection.png)
+
 - **按需加载**：前端按钮点击后从 CDN 加载 MediaPipe FaceLandmarker（~11MB，需客户端互联网）
 - **EAR 计算**：标准 6 点 Eye Aspect Ratio 算法
   - 左眼点：33, 160, 158, 133, 153, 144
