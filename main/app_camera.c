@@ -30,7 +30,7 @@ esp_err_t app_camera_init(framesize_t frame_size, pixformat_t pixel_format)
         .pixel_format   = pixel_format,
         .frame_size     = frame_size,
         .jpeg_quality   = 15,                 // E: q=15，payload 减少 ~15%
-        .fb_count       = 3,                  // A: 三缓冲，face_task 与 stream 并行访问不阻塞
+        .fb_count       = 4,                  // P1: 四缓冲，消除 face_task 与 /capture 并发时的 1500ms 毛刺
         .fb_location    = CAMERA_FB_IN_PSRAM,
         .grab_mode      = CAMERA_GRAB_LATEST,
     };

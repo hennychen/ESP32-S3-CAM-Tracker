@@ -85,6 +85,12 @@ static void face_task(void *arg)
     uint32_t det_count  = 0;
     int64_t  det_t0 = esp_timer_get_time();
 
+    // P3: EMA 平滑器——消除帧间坐标跳变
+    // alpha 越大越灵敏（0.5 = 新旧各半）；跳变 >80px 时重置（换人/误检）
+    const float ema_alpha = 0.5f;
+    bool  ema_active = false;
+    float ema_cx = 0, ema_cy = 0, ema_w = 0, ema_h = 0;
+
     while (true) {
         camera_fb_t *fb = app_camera_get();
         if (!fb) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
@@ -118,14 +124,38 @@ static void face_task(void *arg)
 
                 int x0 = best->box[0], y0 = best->box[1];
                 int x1 = best->box[2], y1 = best->box[3];
+                int raw_cx = x0 + (x1 - x0) / 2;
+                int raw_cy = y0 + (y1 - y0) / 2;
+                int raw_w = x1 - x0, raw_h = y1 - y0;
+
+                // P3: EMA 平滑（跳变 >80px 时重置跟踪目标）
+                if (ema_active) {
+                    int dx = raw_cx - (int)ema_cx;
+                    int dy = raw_cy - (int)ema_cy;
+                    if (dx*dx + dy*dy > 80*80) {
+                        ema_active = false;  // 大跳变=换人，重置
+                    }
+                }
+                if (!ema_active) {
+                    ema_cx = raw_cx; ema_cy = raw_cy;
+                    ema_w = raw_w;   ema_h = raw_h;
+                    ema_active = true;
+                } else {
+                    ema_cx = ema_alpha * raw_cx + (1-ema_alpha) * ema_cx;
+                    ema_cy = ema_alpha * raw_cy + (1-ema_alpha) * ema_cy;
+                    ema_w  = ema_alpha * raw_w  + (1-ema_alpha) * ema_w;
+                    ema_h  = ema_alpha * raw_h  + (1-ema_alpha) * ema_h;
+                }
+
                 r.valid = true;
-                r.x = x0; r.y = y0;
-                r.w = x1 - x0; r.h = y1 - y0;
+                r.x = (int)ema_cx - (int)ema_w / 2;
+                r.y = (int)ema_cy - (int)ema_h / 2;
+                r.w = (int)ema_w;
+                r.h = (int)ema_h;
                 r.score = best->score;
 
-                int cx = x0 + r.w / 2;
-                int cy = y0 + r.h / 2;
-                app_gimbal_track(cx, cy, false);
+                // 用平滑后的中心驱动云台（减少抖动）
+                app_gimbal_track((int)ema_cx, (int)ema_cy, false);
                 miss_streak = 0;
 
                 // 读取 5 点关键点（MNP 输出）并计算粗略姿态指标
@@ -151,8 +181,10 @@ static void face_task(void *arg)
                     r.drowsy = (r.vert_ratio < 0.35f) || (fabsf(r.roll) > 25.0f);
                 }
 
-                ESP_LOGI(TAG, "face: score=%.2f box=[%d,%d,%d,%d] roll=%.0f vr=%.2f drowsy=%d #%u",
-                         best->score, x0, y0, x1, y1,
+                ESP_LOGI(TAG, "face: score=%.2f box=[%d,%d,%d,%d] raw=[%d,%d,%d,%d] roll=%.0f vr=%.2f drowsy=%d #%u",
+                         best->score,
+                         r.x, r.y, r.x+r.w, r.y+r.h,
+                         x0, y0, x1, y1,
                          r.roll, r.vert_ratio, r.drowsy ? 1 : 0, (unsigned)frame_id);
             } else {
                 app_gimbal_track(0, 0, true);
@@ -171,9 +203,9 @@ static void face_task(void *arg)
             det_t0 = now;
         }
 
-        // 降低检测频率，减少与 stream 的摄像头竞争
-        // stream 需要流畅推送，face_task 每 100-200ms 获取一次帧即可
-        uint32_t delay_ms = (miss_streak > 10) ? 200 : 100;
+        // P0: 检测延迟降低（原 100/200ms → 50/150ms）
+        // /capture 短轮询替代了 /stream 长连接，帧缓冲竞争大幅减少
+        uint32_t delay_ms = (miss_streak > 10) ? 150 : 50;
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
     heap_caps_free(rgb);
