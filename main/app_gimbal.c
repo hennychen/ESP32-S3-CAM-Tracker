@@ -24,7 +24,8 @@ static float s_prev_ex = 0, s_prev_ey = 0;
 
 static uint32_t angle_to_duty(float deg)
 {
-    if (deg < 0) deg = 0; if (deg > 180) deg = 180;
+    if (deg < 0) deg = 0;
+    if (deg > 180) deg = 180;
     float us = 500.0f + 2000.0f * deg / 180.0f;
     return (uint32_t)((us / 20000.0f) * SERVO_MAX_DUTY);
 }
@@ -79,8 +80,10 @@ void app_gimbal_track(int cx, int cy, bool lost)
     s_ang_x -= out_x * 0.05f;
     s_ang_y += out_y * 0.05f;
 
-    if (s_ang_x < 10) s_ang_x = 10; if (s_ang_x > 170) s_ang_x = 170;
-    if (s_ang_y < 30) s_ang_y = 30; if (s_ang_y > 150) s_ang_y = 150;
+    if (s_ang_x < 10) s_ang_x = 10;
+    if (s_ang_x > 170) s_ang_x = 170;
+    if (s_ang_y < 30) s_ang_y = 30;
+    if (s_ang_y > 150) s_ang_y = 150;
 
     write_angle(CH_X, s_ang_x);
     write_angle(CH_Y, s_ang_y);

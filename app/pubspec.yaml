@@ -1,0 +1,37 @@
+name: dms_monitor
+description: ESP32-S3-CAM 驾驶员疲劳监测上位机 App
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 人脸检测（468点 MediaPipe TFLite，离线运行）
+  face_detection_tflite: ^6.6.3
+
+  # ESP32 HTTP 通信
+  http: ^1.2.0
+
+  # 前台服务保活
+  flutter_foreground_task: ^8.10.0
+
+  # 屏幕常亮（驾驶中不锁屏）
+  wakelock_plus: ^1.2.5
+
+  # 本地设置持久化
+  shared_preferences: ^2.3.0
+
+  # iOS 网络安全配置兼容
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

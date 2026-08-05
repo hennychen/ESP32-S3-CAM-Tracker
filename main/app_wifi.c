@@ -121,8 +121,8 @@ static bool start_sta(const wifi_creds_t *c)
 {
     // netif 已在 start_ap_and_sta 中创建
     wifi_config_t wc = { 0 };
-    strncpy((char*)wc.sta.ssid,     c->ssid, sizeof(wc.sta.ssid));
-    strncpy((char*)wc.sta.password, c->pass, sizeof(wc.sta.password));
+    strlcpy((char*)wc.sta.ssid, c->ssid, sizeof(wc.sta.ssid));
+    strlcpy((char*)wc.sta.password, c->pass, sizeof(wc.sta.password));
     wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
 
     xEventGroupClearBits(s_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);

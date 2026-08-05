@@ -124,8 +124,10 @@ static void draw_text_rgb565(uint16_t *buf, int w, int h,
 static void draw_rect_fill_rgb565(uint16_t *buf, int w, int h,
                                   int x0, int y0, int x1, int y1, uint16_t color)
 {
-    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-    if (x1 >= w) x1 = w-1; if (y1 >= h) y1 = h-1;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 >= w) x1 = w - 1;
+    if (y1 >= h) y1 = h - 1;
     for (int y = y0; y <= y1; y++)
         for (int x = x0; x <= x1; x++)
             buf[(size_t)y * w + x] = color;

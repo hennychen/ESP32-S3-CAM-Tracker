@@ -56,6 +56,31 @@ static void publish_result(const face_result_t &r)
     app_httpd_set_face(&r);
 }
 
+// 计算眼部区域灰度方差（开眼方差大：瞳孔+眼白纹理；闭眼方差小：眼皮均匀）
+static float calc_eye_var(const uint8_t *rgb565, int img_w, int img_h,
+                          int cx, int cy, int rad)
+{
+    int x0 = cx - rad; if (x0 < 0) x0 = 0;
+    int x1 = cx + rad; if (x1 > img_w) x1 = img_w;
+    int y0 = cy - rad; if (y0 < 0) y0 = 0;
+    int y1 = cy + rad; if (y1 > img_h) y1 = img_h;
+    int count = 0;
+    float sum = 0, sum_sq = 0;
+    const uint16_t *px16 = (const uint16_t *)rgb565;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            uint16_t px = px16[y * img_w + x];
+            uint8_t g = (px >> 5) & 0x3F;  // 绿通道（6bit，近似亮度）
+            sum += g;
+            sum_sq += (float)g * g;
+            count++;
+        }
+    }
+    if (count < 4) return 0;
+    float mean = sum / count;
+    return sum_sq / count - mean * mean;
+}
+
 static void face_task(void *arg)
 {
     ESP_LOGI(TAG, "face detect task start (decoupled from stream)");
@@ -64,7 +89,7 @@ static void face_task(void *arg)
     det->set_score_thr(0.05, 0);   // MSR 阶段：放宽门槛让候选进入 MNP
     det->set_score_thr(0.5,  1);   // MNP 阶段：最终筛选，score>0.5 才算有效人脸
 
-    // C: 预分配 RGB 缓冲（按 HVGA 480x320 上限，兼容更大分辨率时可下调）
+    // C: 预分配 RGB 缓冲（VGA 640x480 双字节 = 614400 字节）
     const size_t rgb_cap = 640 * 480 * 2;
     uint8_t *rgb = (uint8_t *)heap_caps_malloc(rgb_cap, MALLOC_CAP_SPIRAM);
     if (!rgb) {
@@ -91,6 +116,13 @@ static void face_task(void *arg)
     bool  ema_active = false;
     float ema_cx = 0, ema_cy = 0, ema_w = 0, ema_h = 0;
 
+    // 疲劳监测时序状态
+    float vr_hist[40];          // vert_ratio 环形缓冲（~2s @ 50ms/帧）
+    int vr_hist_n = 0, vr_hist_head = 0;
+    float eye_var_baseline = -1; // 眼部方差基线（前30帧EMA）
+    int eye_var_calib = 0;
+    uint32_t closed_frames = 0;  // 连续闭眼/低头帧数
+
     while (true) {
         camera_fb_t *fb = app_camera_get();
         if (!fb) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
@@ -106,6 +138,9 @@ static void face_task(void *arg)
         face_result_t r = {};
         r.frame_id = ++frame_id;
         r.img_w = w; r.img_h = h;
+
+        float eye_var = -1, vr_avg = 0;
+        bool eyes_closed = false;
 
         if (decoded) {
             dl::image::img_t img{};
@@ -128,11 +163,11 @@ static void face_task(void *arg)
                 int raw_cy = y0 + (y1 - y0) / 2;
                 int raw_w = x1 - x0, raw_h = y1 - y0;
 
-                // P3: EMA 平滑（跳变 >80px 时重置跟踪目标）
+                // P3: EMA 平滑（跳变 >160px 时重置跟踪目标，VGA 分辨率下按比例放大）
                 if (ema_active) {
                     int dx = raw_cx - (int)ema_cx;
                     int dy = raw_cy - (int)ema_cy;
-                    if (dx*dx + dy*dy > 80*80) {
+                    if (dx*dx + dy*dy > 160*160) {
                         ema_active = false;  // 大跳变=换人，重置
                     }
                 }
@@ -181,6 +216,36 @@ static void face_task(void *arg)
                     r.drowsy = (r.vert_ratio < 0.35f) || (fabsf(r.roll) > 25.0f);
                 }
 
+                // 眼部区域方差（辅助信号：闭眼时纹理减少→方差下降）
+                if (r.w > 20 && r.kp[0] > 0 && r.kp[6] > 0) {
+                    int eye_dist = abs(r.kp[6] - r.kp[0]);
+                    if (eye_dist > 8) {
+                        int rad = eye_dist / 5;
+                        float lv = calc_eye_var(rgb, w, h, r.kp[0], r.kp[1], rad);
+                        float rv = calc_eye_var(rgb, w, h, r.kp[6], r.kp[7], rad);
+                        eye_var = (lv + rv) * 0.5f;
+                        // 构建基线（前30帧 EMA）
+                        if (eye_var_calib < 30) {
+                            eye_var_baseline = (eye_var_baseline < 0) ? eye_var
+                                : eye_var_baseline * 0.9f + eye_var * 0.1f;
+                            eye_var_calib++;
+                        }
+                    }
+                }
+
+                // 头部姿态时序：vert_ratio 环形缓冲平滑
+                vr_hist[vr_hist_head] = r.vert_ratio;
+                vr_hist_head = (vr_hist_head + 1) % 40;
+                if (vr_hist_n < 40) vr_hist_n++;
+                int vn = (vr_hist_n < 20) ? vr_hist_n : 20;
+                for (int i = 0; i < vn; i++)
+                    vr_avg += vr_hist[(vr_hist_head - vn + i + 40) % 40];
+                if (vn > 0) vr_avg /= vn;
+
+                // 眼部方差判定闭眼（方差降至基线35%以下）
+                if (eye_var >= 0 && eye_var_baseline > 0 && eye_var < eye_var_baseline * 0.35f)
+                    eyes_closed = true;
+
                 ESP_LOGI(TAG, "face: score=%.2f box=[%d,%d,%d,%d] raw=[%d,%d,%d,%d] roll=%.0f vr=%.2f drowsy=%d #%u",
                          best->score,
                          r.x, r.y, r.x+r.w, r.y+r.h,
@@ -190,6 +255,40 @@ static void face_task(void *arg)
                 app_gimbal_track(0, 0, true);
                 if (miss_streak < 1000) miss_streak++;
             }
+        }
+
+        // === ESP32 端疲劳融合评分（始终运行，前端离线时自主告警）===
+        {
+            if (eyes_closed || r.drowsy) closed_frames++;
+            else closed_frames = 0;
+
+            float score = 0;
+            // 信号1：头部下垂（平滑后的 vert_ratio）
+            if (vr_avg > 0) {
+                if (vr_avg < 0.28f) score += 0.4f;       // 严重低头
+                else if (vr_avg < 0.35f) score += 0.2f;   // 轻微低头
+            }
+            // 信号2：头部歪斜
+            if (r.valid && fabsf(r.roll) > 20.0f) score += 0.2f;
+            // 信号3：持续丢脸（>2s 无脸 = 头完全低垂）
+            if (miss_streak > 40) score += 0.4f;
+            // 信号4：眼部方差下降
+            if (eyes_closed) score += 0.15f;
+            // 信号5：原有粗略疲劳标志
+            if (r.drowsy) score += 0.15f;
+
+            score = fminf(score, 1.0f);
+            int level = (score >= 0.7f) ? 3 : (score >= 0.5f) ? 2 : (score >= 0.3f) ? 1 : 0;
+
+            bool online = app_httpd_is_online();
+            snprintf(r.mode, sizeof(r.mode), "%s", online ? "online" : "offline");
+            r.eyes_closed = eyes_closed;
+            r.closed_seconds = closed_frames * 0.05f;
+            r.fatigue_score = score;
+            r.fatigue_level = level;
+
+            // 离线模式：ESP32 自主触发告警
+            if (!online) app_httpd_set_alert(level);
         }
 
         publish_result(r);

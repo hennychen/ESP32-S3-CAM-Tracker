@@ -60,6 +60,11 @@ esp_err_t app_camera_init(framesize_t frame_size, pixformat_t pixel_format)
         s->set_dcw(s, 1);
         s->set_hmirror(s, 0);
         s->set_vflip(s, 0);
+        // 图像质量调优：增强眼部纹理对比，改善暗光/逆光场景
+        s->set_contrast(s, 1);       // 对比度 +1：眼部纹理更清晰
+        s->set_sharpness(s, 1);      // 锐度 +1：边缘更锐利，利于关键点定位
+        s->set_ae_level(s, 1);       // 曝光补偿 +1：暗光场景提亮面部
+        s->set_gainceiling(s, GAINCEILING_8X);  // 增益上限 8X：夜间/隧道可用
     }
     return ESP_OK;
 }

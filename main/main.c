@@ -48,8 +48,8 @@ static void start_mdns(void)
     ESP_LOGI(TAG, "mDNS started: http://%s.local  and  http://esp32-cam.local", host);
 }
 
-// 检测输入分辨率：QVGA 320x240 与 ESP-DL MSR 模型输入 160x120 宽高比完全匹配(4:3)，避免缩放失真
-#define DET_FRAMESIZE   FRAMESIZE_QVGA        // 320x240
+// 检测输入分辨率：VGA 640x480，4倍于 QVGA 像素量，显著提升眼部区域精度
+#define DET_FRAMESIZE   FRAMESIZE_VGA         // 640x480
 
 void app_main(void)
 {
@@ -78,7 +78,7 @@ void app_main(void)
     }
 
     // 3) 云台
-    app_gimbal_init(320, 240);
+    app_gimbal_init(640, 480);
 
     // 4) HTTP MJPEG + JSON + 配网 API
     app_httpd_start();

@@ -33,6 +33,35 @@ extern const uint8_t wifi_html_end[]    asm("_binary_wifi_html_end");
 static face_result_t   s_face = {0};
 static SemaphoreHandle_t s_face_lock;
 
+/* ===== 心跳与告警全局状态 ===== */
+static volatile uint32_t s_last_heartbeat_ms = 0;  // 上次心跳时间（esp_timer_get_time/1000）
+static volatile int      s_alert_level = 0;        // 当前告警等级 0~3
+#define HEARTBEAT_TIMEOUT_MS  10000                 // 10s 无心跳 → 离线
+
+void app_httpd_heartbeat(void)
+{
+    s_last_heartbeat_ms = (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+bool app_httpd_is_online(void)
+{
+    if (s_last_heartbeat_ms == 0) return false;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    return (now - s_last_heartbeat_ms) < HEARTBEAT_TIMEOUT_MS;
+}
+
+void app_httpd_set_alert(int level)
+{
+    if (level < 0) level = 0;
+    if (level > 3) level = 3;
+    s_alert_level = level;
+}
+
+int app_httpd_get_alert(void)
+{
+    return s_alert_level;
+}
+
 void app_httpd_set_face(const face_result_t *r)
 {
     xSemaphoreTake(s_face_lock, portMAX_DELAY);
@@ -65,12 +94,16 @@ static esp_err_t face_handler(httpd_req_t *req)
         "{\"valid\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
         "\"score\":%.2f,\"frame\":%lu,\"iw\":%d,\"ih\":%d,"
         "\"kp\":[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d],"
-        "\"roll\":%.1f,\"vr\":%.2f,\"drowsy\":%s}",
+        "\"roll\":%.1f,\"vr\":%.2f,\"drowsy\":%s,"
+        "\"mode\":\"%s\",\"eyes_closed\":%s,\"closed_sec\":%.1f,"
+        "\"fa_lvl\":%d,\"fa_score\":%.2f}",
         f.valid ? "true" : "false", f.x, f.y, f.w, f.h,
         f.score, (unsigned long)f.frame_id, f.img_w, f.img_h,
         f.kp[0], f.kp[1], f.kp[2], f.kp[3], f.kp[4],
         f.kp[5], f.kp[6], f.kp[7], f.kp[8], f.kp[9],
-        f.roll, f.vert_ratio, f.drowsy ? "true" : "false");
+        f.roll, f.vert_ratio, f.drowsy ? "true" : "false",
+        f.mode, f.eyes_closed ? "true" : "false", f.closed_seconds,
+        f.fatigue_level, f.fatigue_score);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -506,6 +539,40 @@ void app_httpd_start_captive_dns(void)
     xTaskCreate(dns_hijack_task, "dns_hijack", 3072, NULL, 4, NULL);
 }
 
+/* ============ 心跳 & 告警 ============ */
+static esp_err_t heartbeat_handler(httpd_req_t *req)
+{
+    app_httpd_heartbeat();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    const char *resp = app_httpd_is_online()
+        ? "{\"ok\":true,\"mode\":\"online\"}"
+        : "{\"ok\":true,\"mode\":\"offline\"}";
+    return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t alert_handler(httpd_req_t *req)
+{
+    char query[32] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    char level[16] = {0};
+    httpd_query_key_value(query, "level", level, sizeof(level));
+
+    int lvl = 0;
+    if (strcmp(level, "warning") == 0)      lvl = 2;
+    else if (strcmp(level, "danger") == 0)  lvl = 3;
+    else                                     lvl = 0;  // clear
+
+    app_httpd_set_alert(lvl);
+    // TODO: 接入蜂鸣器/LED 硬件（当前仅记录等级）
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    char resp[48];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"level\":%d}", lvl);
+    return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+}
+
 /* ============ 启动 ============ */
 esp_err_t app_httpd_start(void)
 {
@@ -532,6 +599,8 @@ esp_err_t app_httpd_start(void)
     httpd_uri_t u_wscan    = { .uri="/wifi/scan",    .method=HTTP_GET,  .handler=wifi_scan_handler };
     httpd_uri_t u_wsave    = { .uri="/wifi/save",    .method=HTTP_POST, .handler=wifi_save_handler };
     httpd_uri_t u_wreset   = { .uri="/wifi/reset",   .method=HTTP_POST, .handler=wifi_reset_handler };
+    httpd_uri_t u_hb       = { .uri="/heartbeat",    .method=HTTP_GET,  .handler=heartbeat_handler };
+    httpd_uri_t u_alert    = { .uri="/alert",        .method=HTTP_GET,  .handler=alert_handler };
 
     httpd_register_uri_handler(server, &u_index);
     httpd_register_uri_handler(server, &u_wifi);
@@ -542,6 +611,8 @@ esp_err_t app_httpd_start(void)
     httpd_register_uri_handler(server, &u_wscan);
     httpd_register_uri_handler(server, &u_wsave);
     httpd_register_uri_handler(server, &u_wreset);
+    httpd_register_uri_handler(server, &u_hb);
+    httpd_register_uri_handler(server, &u_alert);
 
     // Captive Portal: 未匹配的路径一律 302 -> /wifi
     httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, captive_404_handler);

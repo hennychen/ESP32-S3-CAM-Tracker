@@ -42,6 +42,11 @@
     color:#fff; font-weight:bold; border-radius:6px; font-size:14px;
     display:none; animation:pulse 1s infinite; }
   @keyframes pulse { 50% { opacity:0.6; } }
+  #fatigue-alert { margin-top:8px; padding:10px 16px; border-radius:6px;
+    font-weight:bold; font-size:14px; display:none; }
+  .fa-l1 { background:#f39c12; color:#000; }
+  .fa-l2 { background:#e67e22; color:#fff; }
+  .fa-l3 { background:#c0392b; color:#fff; animation:pulse 1s infinite; }
 </style>
 </head>
 <body>
@@ -68,10 +73,14 @@
   <div style="margin-top:8px;">
     <button id="ear-btn">启用精确闭眼检测 (MediaPipe)</button>
     <span id="ear-display" style="display:none; margin-left:12px; font-family:monospace; font-size:13px;">
-      EAR: <b id="ear-val">--</b>  <span id="eye-status">--</span>
-      <span style="color:var(--muted); margin-left:8px;">(闭眼阈值 &lt; 0.20)</span>
+      EAR: <b id="ear-val">--</b> <span id="eye-status">--</span>
+      <span id="perclos-info" style="margin-left:12px; display:none;">
+        PERCLOS: <b id="perclos-val">0.0%</b>
+        <span id="baseline-status" style="color:var(--muted); margin-left:8px;">基线校准中...</span>
+      </span>
     </span>
   </div>
+  <div id="fatigue-alert"></div>
 
 <script>
 const img=document.getElementById('v'),
@@ -146,33 +155,79 @@ async function pollFace(){
   }
   setTimeout(pollFace,300);
 }
+// 心跳上报：页面打开后每 5 秒发一次，告诉 ESP32 上位机在线
+setInterval(function(){ fetch('/heartbeat?t='+Date.now()).catch(function(){}); }, 5000);
+fetch('/heartbeat?t='+Date.now()).catch(function(){});
+
 pollFace();
 </script>
 
 <script type="module">
-// === 路线C: MediaPipe 468 点精确闭眼检测 ===
-// 按需加载：用户点击按钮后从 CDN 加载模型
-// 需要客户端有互联网连接（如 STA 模式连接路由器）
+// === MediaPipe 468点精确闭眼检测 + PERCLOS 疲劳分析 ===
+// 按需加载：用户点击按钮后从 CDN 加载模型（需 STA 模式有互联网）
+// PERCLOS: 60秒内眼睛闭合>80%的时间占比，>8%判定疲劳（NHTSA标准）
 
 let faceLandmarker = null;
 let earEnabled = false;
+let earStartTime = 0;
+
+// --- EAR 滑动平均（5帧窗口，消除帧间抖动）---
+const earRawHistory = [];
+const EAR_WINDOW = 5;
+
+// --- 个人 EAR 基线校准（启用后前30秒采集）---
+const baselineSamples = [];
+const BASELINE_DURATION_MS = 30000;
+let personalBaseline = 0.28;
+let baselineReady = false;
+
+// --- PERCLOS 60s 滑动窗口 ---
+const earTimeline = [];
+
+// --- 闭眼持续时长状态 ---
+let closedSince = 0;
+let lastSentLevel = -1;
+
 const earBtn = document.getElementById('ear-btn');
 const earDisplay = document.getElementById('ear-display');
 const earVal = document.getElementById('ear-val');
 const eyeStatus = document.getElementById('eye-status');
 const imgEl = document.getElementById('v');
+const perclosInfo = document.getElementById('perclos-info');
+const perclosVal = document.getElementById('perclos-val');
+const baselineStatus = document.getElementById('baseline-status');
+const fatigueAlert = document.getElementById('fatigue-alert');
 
 const offCanvas = document.createElement('canvas');
 const offCtx = offCanvas.getContext('2d');
 
-// MediaPipe 468 点 EAR 计算
-// 左眼: 33(外角) 160(上1) 158(上2) 133(内角) 153(下1) 144(下2)
-// 右眼: 362(内角) 385(上1) 387(上2) 263(外角) 373(下1) 380(下2)
+// EAR 计算（468点标准索引）
 function calcEAR(lm) {
   const d = (a, b) => Math.hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y);
   const left = (d(160, 144) + d(158, 153)) / (2 * d(33, 133));
   const right = (d(385, 380) + d(387, 373)) / (2 * d(362, 263));
   return (left + right) / 2;
+}
+
+// 告警指令下发到 ESP32（蜂鸣/LED）
+function dispatchAlert(level) {
+  if (level === lastSentLevel) return;
+  lastSentLevel = level;
+  const param = level === 0 ? 'clear' : (level >= 2 ? 'danger' : 'warning');
+  fetch('/alert?level=' + param).catch(function(){});
+}
+
+// 分级疲劳告警 UI（L1黄注意/L2橙疲劳/L3红危险）
+function updateFatigueUI(level, durSec) {
+  if (level === 0) { fatigueAlert.style.display = 'none'; return; }
+  fatigueAlert.style.display = 'block';
+  fatigueAlert.className = 'fa-l' + level;
+  if (level === 1)
+    fatigueAlert.textContent = '注意：闭眼 ' + durSec.toFixed(1) + 's';
+  else if (level === 2)
+    fatigueAlert.textContent = '疲劳驾驶：闭眼 ' + durSec.toFixed(1) + 's，请注意';
+  else
+    fatigueAlert.textContent = '！！危险：微睡眠 ' + durSec.toFixed(1) + 's，请立即停车！';
 }
 
 earBtn.onclick = async function() {
@@ -200,9 +255,24 @@ earBtn.onclick = async function() {
   earEnabled = !earEnabled;
   earBtn.textContent = earEnabled ? '关闭精确检测' : '启用精确闭眼检测 (MediaPipe)';
   earDisplay.style.display = earEnabled ? 'inline' : 'none';
+  if (earEnabled) {
+    earStartTime = Date.now();
+    baselineReady = false;
+    baselineSamples.length = 0;
+    earTimeline.length = 0;
+    earRawHistory.length = 0;
+    closedSince = 0;
+    lastSentLevel = -1;
+    perclosInfo.style.display = 'inline';
+    baselineStatus.textContent = '基线校准中...';
+  } else {
+    perclosInfo.style.display = 'none';
+    fatigueAlert.style.display = 'none';
+    dispatchAlert(0);
+  }
 };
 
-// 每帧触发 EAR 检测
+// 每帧触发 EAR + PERCLOS 检测
 window.addEventListener('frameReady', function() {
   if (!earEnabled || !faceLandmarker) return;
   try {
@@ -210,15 +280,73 @@ window.addEventListener('frameReady', function() {
     offCanvas.height = imgEl.naturalHeight || 240;
     offCtx.drawImage(imgEl, 0, 0);
     const res = faceLandmarker.detect(offCanvas);
+
     if (res.faceLandmarks && res.faceLandmarks.length > 0) {
-      const ear = calcEAR(res.faceLandmarks[0]);
+      const rawEar = calcEAR(res.faceLandmarks[0]);
+
+      // 1. 滑动平均滤波
+      earRawHistory.push(rawEar);
+      if (earRawHistory.length > EAR_WINDOW) earRawHistory.shift();
+      const ear = earRawHistory.reduce(function(a,b){return a+b;},0) / earRawHistory.length;
+
+      const now = Date.now();
+      const elapsed = now - earStartTime;
+
+      // 2. 个人基线校准（前30秒取中位数）
+      if (!baselineReady) {
+        if (elapsed < BASELINE_DURATION_MS) {
+          baselineSamples.push(ear);
+        } else if (baselineSamples.length > 10) {
+          const sorted = baselineSamples.slice().sort(function(a,b){return a-b;});
+          personalBaseline = sorted[Math.floor(sorted.length / 2)];
+          baselineReady = true;
+          baselineStatus.textContent = '基线:' + personalBaseline.toFixed(3);
+        }
+      }
+
+      // 3. 闭眼判定（P80: EAR < 个人基线×0.2）
+      const closedThreshold = personalBaseline * 0.2;
+      const closed = ear < closedThreshold;
+
       earVal.textContent = ear.toFixed(3);
-      const closed = ear < 0.20;
       eyeStatus.textContent = closed ? 'CLOSED' : 'OPEN';
       eyeStatus.style.color = closed ? '#e74c3c' : '#00ff88';
+
+      // 4. PERCLOS（仅基线就绪后计算，60s滑动窗口）
+      let perclos = 0;
+      if (baselineReady) {
+        earTimeline.push({t: now, ear: ear});
+        while (earTimeline.length > 0 && now - earTimeline[0].t > 60000)
+          earTimeline.shift();
+        let closedCount = 0;
+        for (let i = 0; i < earTimeline.length; i++)
+          if (earTimeline[i].ear < closedThreshold) closedCount++;
+        perclos = earTimeline.length > 0 ? closedCount / earTimeline.length : 0;
+        perclosVal.textContent = (perclos * 100).toFixed(1) + '%';
+      }
+
+      // 5. 闭眼持续时长分级告警
+      let level = 0, durSec = 0;
+      if (closed) {
+        if (closedSince === 0) closedSince = now;
+        durSec = (now - closedSince) / 1000;
+        if (durSec >= 3) level = 3;        // 危险：微睡眠
+        else if (durSec >= 1) level = 2;   // 疲劳
+        else if (durSec >= 0.5) level = 1; // 注意
+      } else {
+        closedSince = 0;
+      }
+      // PERCLOS 超标提升告警等级
+      if (baselineReady && perclos > 0.15 && level < 2) level = 2;
+      else if (baselineReady && perclos > 0.08 && level < 1) level = 1;
+
+      updateFatigueUI(level, durSec);
+      dispatchAlert(level);
+
     } else {
       earVal.textContent = '--';
       eyeStatus.textContent = 'no face';
+      if (lastSentLevel > 0) { updateFatigueUI(0, 0); dispatchAlert(0); }
     }
   } catch(e) {}
 });
